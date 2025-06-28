@@ -1,0 +1,15 @@
+/* app/page.module.css */
+
+.sidebar {
+  width: 250px;
+  background: var(--color-card);
+  border-right: 1px solid var(--color-border);
+
+  /* Pull the whole sidebar up by header height (4rem) */
+  margin-top: -4rem;
+  /* So its inner content (mini-header, new chat, history) starts below that */
+  padding-top: 4rem;
+
+  box-sizing: border-box;
+  overflow-y: auto;
+}
