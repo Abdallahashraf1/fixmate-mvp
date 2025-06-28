@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+openai
+pinecone
+pymongo[srv]==3.11
+certifi
+Pillow
+langdetect
+sse-starlette
