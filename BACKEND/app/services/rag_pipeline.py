@@ -14,6 +14,7 @@ from PIL import Image, ImageOps
 from app.config import settings
 from app.db import mongo_client, sessions_col, history_col
 from app.models import ChatRequest, ChatResponse, GuardrailResult, SourceChunk
+from app.services.guardrails import guardrails
 from app.services.retrieval import RetrievalCandidate, hybrid_retriever
 from app.utils import build_system_prompt, detect_language, new_session
 
@@ -45,9 +46,9 @@ class RagPipeline:
         )
 
         self.rewrite_chain = prompt | rewrite_llm | StrOutputParser()
-        self.validate_chain = prompt | rewrite_llm | StrOutputParser()
         self.title_chain = prompt | rewrite_llm | StrOutputParser()
         self.answer_chain = RunnableLambda(lambda state: state["messages"]) | answer_llm | StrOutputParser()
+        self.revision_chain = prompt | answer_llm | StrOutputParser()
         self.embeddings = OpenAIEmbeddings(
             model="text-embedding-3-small",
             api_key=settings.openai_api_key,
@@ -62,7 +63,7 @@ class RagPipeline:
             {"messages": prepared.messages},
             config=self._chain_config(prepared, "answer"),
         )
-        prepared.guardrails["output"] = GuardrailResult(allowed=True)
+        assistant_text = self._apply_output_guardrails(prepared, assistant_text)
         self.persist_turn(prepared, assistant_text)
         return ChatResponse(
             assistant_text=assistant_text,
@@ -79,45 +80,32 @@ class RagPipeline:
             yield fallback.encode("utf-8")
             return
 
-        assistant_buf = ""
-        for delta in self.answer_chain.stream(
+        assistant_text = self.answer_chain.invoke(
             {"messages": prepared.messages},
             config=self._chain_config(prepared, "answer_stream"),
-        ):
-            if delta:
-                assistant_buf += delta
-                yield delta.encode("utf-8")
-
-        prepared.guardrails["output"] = GuardrailResult(allowed=True)
-        self.persist_turn(prepared, assistant_buf)
+        )
+        assistant_text = self._apply_output_guardrails(prepared, assistant_text)
+        self.persist_turn(prepared, assistant_text)
+        yield assistant_text.encode("utf-8")
 
     def prepare(self, req: ChatRequest) -> PreparedChat:
         is_ar = detect_language(req.query)
-        rewritten = self._rewrite_query(req.query, is_ar)
-        query_embedding = self.embeddings.embed_query(rewritten)
-
-        validation_matches = hybrid_retriever.dense_search(
-            req=req,
-            query_embedding=query_embedding,
-            top_k=1,
-        )
-        context_snip = ""
-        if validation_matches:
-            context_snip = validation_matches[0].text[:300]
-
-        input_guardrail = self._validate_query(req, is_ar, context_snip)
-        guardrails = {"input": input_guardrail}
+        input_guardrail = guardrails.check_input(req)
+        guardrails_map = {"input": input_guardrail}
         if not input_guardrail.allowed:
             return PreparedChat(
                 req=req,
                 session={},
                 is_ar=is_ar,
-                rewritten_query=rewritten,
+                rewritten_query="",
                 messages=[],
                 source_chunks=[],
                 images=[],
-                guardrails=guardrails,
+                guardrails=guardrails_map,
             )
+
+        rewritten = self._rewrite_query(req.query, is_ar)
+        query_embedding = self.embeddings.embed_query(rewritten)
 
         session = self._ensure_session(req)
         retrieval_candidates = hybrid_retriever.runnable.invoke(
@@ -141,7 +129,7 @@ class RagPipeline:
             messages=messages,
             source_chunks=source_chunks,
             images=images,
-            guardrails=guardrails,
+            guardrails=guardrails_map,
         )
 
     def persist_turn(self, prepared: PreparedChat, assistant_text: str) -> None:
@@ -202,26 +190,65 @@ class RagPipeline:
         )
         return self.rewrite_chain.invoke({"prompt": rewrite_prompt}).strip()
 
-    def _validate_query(self, req: ChatRequest, is_ar: bool, context_snip: str) -> GuardrailResult:
-        val_prompt = (
-            (
-                f"هل يجب الإجابة على هذا السؤال؟ يجب أن يتعلق فقط بصيانة أو تشخيص {req.make}.\n"
-                f"السؤال: {req.query}\nالسياق: {context_snip}\nأجب بنعم أو لا:"
-            )
-            if is_ar
-            else (
-                f"Should this question be answered? It must relate solely to {req.make} diagnostics/repairs. YES or NO.\n"
-                f"Question: {req.query}\nContext: {context_snip}"
-            )
+    def _apply_output_guardrails(self, prepared: PreparedChat, assistant_text: str) -> str:
+        first = guardrails.check_output(
+            question=prepared.req.query,
+            answer=assistant_text,
+            sources=prepared.source_chunks,
         )
-        result = self.validate_chain.invoke({"prompt": val_prompt}).strip().upper()
-        if "NO" in result or "لا" in result:
-            return GuardrailResult(
-                allowed=False,
-                reason="Question is outside supported vehicle diagnostics/repair scope.",
-                flags=["out_of_scope"],
+        if first.should_revise and settings.revise_ungrounded_output:
+            revised_text = self.revision_chain.invoke(
+                {
+                    "prompt": self._revision_prompt(
+                        question=prepared.req.query,
+                        draft=first.text,
+                        sources=prepared.source_chunks,
+                    )
+                },
+                config=self._chain_config(prepared, "revise_ungrounded_answer"),
+            ).strip()
+            second = guardrails.check_output(
+                question=prepared.req.query,
+                answer=revised_text,
+                sources=prepared.source_chunks,
             )
-        return GuardrailResult(allowed=True)
+            second.result.flags = list(dict.fromkeys(["revised_for_grounding", *second.result.flags]))
+            second.result.details["initial_output_guardrail"] = first.result.model_dump()
+            prepared.guardrails["output"] = second.result
+            return second.text
+
+        prepared.guardrails["output"] = first.result
+        return first.text
+
+    def _revision_prompt(self, *, question: str, draft: str, sources: list[SourceChunk]) -> str:
+        if not sources:
+            return (
+                "Rewrite the draft answer as a concise refusal because no retrieved manual context is available. "
+                "Do not add facts, procedures, specs, part numbers, or external references.\n\n"
+                f"Question:\n{question}\n\nDraft answer:\n{draft}"
+            )
+        context = "\n\n".join(
+            f"[{source.chunk_id} | {source.source} p.{source.page}]\n{source.text}"
+            for source in sources
+        )
+        return f"""
+Revise the draft answer so every factual claim is grounded only in the retrieved context.
+
+Rules:
+- Use only the retrieved context.
+- Remove unsupported claims, specifications, steps, or part references.
+- If the context is insufficient, say what cannot be confirmed from the retrieved manual context.
+- Do not include emails, phone numbers, addresses, API keys, database URIs, or other PII/secrets.
+
+Question:
+{question}
+
+Retrieved context:
+{context}
+
+Draft answer:
+{draft}
+""".strip()
 
     def _ensure_session(self, req: ChatRequest) -> dict:
         sess = sessions_col.find_one({"session_id": req.session_id, "user_id": req.user_id})
@@ -311,7 +338,7 @@ class RagPipeline:
     def _chain_config(self, prepared: PreparedChat, run_name: str) -> dict:
         return {
             "run_name": run_name,
-            "tags": ["fixmate", "phase2", "hybrid-rrf"],
+            "tags": ["fixmate", "phase3", "hybrid-rrf", "guardrails"],
             "metadata": {
                 "session_id": prepared.req.session_id,
                 "make": prepared.req.make,
@@ -327,7 +354,7 @@ class RagPipeline:
     def _chain_config_for_req(self, req: ChatRequest, rewritten_query: str, run_name: str) -> dict:
         return {
             "run_name": run_name,
-            "tags": ["fixmate", "phase2", "hybrid-rrf"],
+            "tags": ["fixmate", "phase3", "hybrid-rrf", "guardrails"],
             "metadata": {
                 "session_id": req.session_id,
                 "make": req.make,

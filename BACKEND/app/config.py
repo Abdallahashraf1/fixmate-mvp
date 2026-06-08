@@ -24,6 +24,8 @@ class Settings:
     short_term_turns: int
     rewrite_model: str
     answer_model: str
+    guardrail_model: str
+    revise_ungrounded_output: bool
     rrf_k: int
     dense_candidates: int
     bm25_candidates: int
@@ -40,6 +42,8 @@ settings = Settings(
     short_term_turns=int(os.getenv("SHORT_TERM_TURNS", "6")),
     rewrite_model=os.getenv("OPENAI_REWRITE_MODEL", "gpt-4o-mini"),
     answer_model=os.getenv("OPENAI_ANSWER_MODEL", "gpt-4o"),
+    guardrail_model=os.getenv("OPENAI_GUARDRAIL_MODEL", "gpt-4o-mini"),
+    revise_ungrounded_output=os.getenv("REVISE_UNGROUNDED_OUTPUT", "true").lower() == "true",
     rrf_k=int(os.getenv("RRF_K", "60")),
     dense_candidates=int(os.getenv("DENSE_CANDIDATES", "40")),
     bm25_candidates=int(os.getenv("BM25_CANDIDATES", "40")),

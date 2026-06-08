@@ -28,6 +28,7 @@ class GuardrailResult(BaseModel):
     allowed: bool
     reason: Optional[str] = None
     flags: List[str] = Field(default_factory=list)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 class Message(BaseModel):
     role: str

@@ -22,6 +22,8 @@ Optional backend variables:
 - `SHORT_TERM_TURNS`, defaults to `6`
 - `OPENAI_REWRITE_MODEL`, defaults to `gpt-4o-mini`
 - `OPENAI_ANSWER_MODEL`, defaults to `gpt-4o`
+- `OPENAI_GUARDRAIL_MODEL`, defaults to `gpt-4o-mini`
+- `REVISE_UNGROUNDED_OUTPUT`, defaults to `true`
 - `RRF_K`, defaults to `60`
 - `DENSE_CANDIDATES`, defaults to `40`
 - `BM25_CANDIDATES`, defaults to `40`
@@ -50,6 +52,8 @@ uv run uvicorn app.main:app --reload
 The chat pipeline loads only the last configured `SHORT_TERM_TURNS` turns from MongoDB session history. This is short-term session memory only; the app does not use cross-session or vector long-term memory.
 
 Retrieval uses hybrid search: dense Pinecone results from the selected make/model namespace plus BM25 MongoDB text search from `FixMate.manual_chunks`. The two ranked lists are merged with Reciprocal Rank Fusion using `RRF_K`.
+
+Guardrails run in both directions. Input guardrails block prompt injection and out-of-scope questions before retrieval or answer generation. Output guardrails check grounding against retrieved chunks and redact detected PII or secret-like values before the answer is persisted or returned.
 
 If deployment still requires `requirements.txt`, generate it from `pyproject.toml` instead of editing it by hand:
 
