@@ -1,0 +1,22 @@
+BACKEND/.env
+FRONTEND/.env.local
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Backend eval outputs
+BACKEND/app/evaluation/results/
+
+# Frontend
+FRONTEND/my-app/.next/
+FRONTEND/my-app/node_modules/
+FRONTEND/my-app/out/
+
+# OS/editor
+.DS_Store
