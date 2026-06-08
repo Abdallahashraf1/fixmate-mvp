@@ -12,8 +12,9 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from PIL import Image, ImageOps
 
 from app.config import settings
-from app.db import mongo_client, pinecone_client, sessions_col, history_col
+from app.db import mongo_client, sessions_col, history_col
 from app.models import ChatRequest, ChatResponse, GuardrailResult, SourceChunk
+from app.services.retrieval import RetrievalCandidate, hybrid_retriever
 from app.utils import build_system_prompt, detect_language, new_session
 
 
@@ -95,16 +96,14 @@ class RagPipeline:
         rewritten = self._rewrite_query(req.query, is_ar)
         query_embedding = self.embeddings.embed_query(rewritten)
 
-        idx = pinecone_client.Index(req.make)
-        validation_matches = self._query_pinecone(
-            idx=idx,
-            vector=query_embedding,
-            namespace=req.model,
+        validation_matches = hybrid_retriever.dense_search(
+            req=req,
+            query_embedding=query_embedding,
             top_k=1,
         )
         context_snip = ""
         if validation_matches:
-            context_snip = self._metadata(validation_matches[0]).get("text", "")[:300]
+            context_snip = validation_matches[0].text[:300]
 
         input_guardrail = self._validate_query(req, is_ar, context_snip)
         guardrails = {"input": input_guardrail}
@@ -121,16 +120,17 @@ class RagPipeline:
             )
 
         session = self._ensure_session(req)
-        retrieval_matches = self._query_pinecone(
-            idx=idx,
-            vector=query_embedding,
-            namespace=req.model,
-            top_k=5,
+        retrieval_candidates = hybrid_retriever.runnable.invoke(
+            {
+                "req": req,
+                "rewritten_query": rewritten,
+                "query_embedding": query_embedding,
+            },
+            config=self._chain_config_for_req(req, rewritten, "hybrid_retrieval"),
         )
-        unique_matches = self._unique_matches(retrieval_matches, limit=3)
-        context_full = "\n\n".join(self._metadata(m).get("text", "") for m in unique_matches)[:2000]
-        source_chunks = self._source_chunks(unique_matches)
-        images = self._images_for_matches(req, unique_matches)
+        context_full = hybrid_retriever.build_context(retrieval_candidates)
+        source_chunks = hybrid_retriever.to_source_chunks(retrieval_candidates)
+        images = self._images_for_candidates(req, retrieval_candidates)
         messages = self._messages(req, is_ar, context_full)
 
         return PreparedChat(
@@ -238,29 +238,6 @@ class RagPipeline:
         })
         return {"session_id": ns["session_id"], "summary": ""}
 
-    def _query_pinecone(self, *, idx, vector: list[float], namespace: str, top_k: int) -> list:
-        response = idx.query(
-            vector=vector,
-            top_k=top_k,
-            include_metadata=True,
-            namespace=namespace,
-            filter={"source": {"$nin": []}, "text": {"$nin": []}},
-        )
-        if hasattr(response, "matches"):
-            return list(response.matches or [])
-        return list(response.get("matches", []))
-
-    def _unique_matches(self, matches: Iterable, limit: int) -> list:
-        unique, seen = [], set()
-        for match in matches:
-            text = self._metadata(match).get("text", "")
-            if text and text not in seen:
-                seen.add(text)
-                unique.append(match)
-                if len(unique) == limit:
-                    break
-        return unique
-
     def _messages(self, req: ChatRequest, is_ar: bool, context: str) -> list[BaseMessage]:
         system_msg = build_system_prompt(req.role, is_ar, req.make, req.model, context)
         messages: list[BaseMessage] = [SystemMessage(content=system_msg)]
@@ -286,30 +263,14 @@ class RagPipeline:
         docs.reverse()
         return docs
 
-    def _source_chunks(self, matches: Iterable) -> list[SourceChunk]:
-        chunks = []
-        for rank, match in enumerate(matches, start=1):
-            metadata = self._metadata(match)
-            text = metadata.get("text", "")
-            source = metadata.get("pdf") or metadata.get("source") or ""
-            page = metadata.get("page") or 0
-            dense_score = self._score(match)
-            chunks.append(SourceChunk(
-                chunk_id=str(metadata.get("chunk_id") or self._id(match) or f"dense-{rank}"),
-                text=text,
-                source=source,
-                page=int(page),
-                rrf_score=0.0,
-                dense_rank=rank,
-                dense_score=dense_score,
-                metadata={k: v for k, v in metadata.items() if k != "text"},
-            ))
-        return chunks
-
-    def _images_for_matches(self, req: ChatRequest, matches: Iterable) -> list[dict]:
+    def _images_for_candidates(self, req: ChatRequest, candidates: Iterable[RetrievalCandidate]) -> list[dict]:
         images_out = []
-        for match in matches:
-            for img_id in self._metadata(match).get("image_ids", []):
+        seen = set()
+        for candidate in candidates:
+            for img_id in candidate.image_ids:
+                if img_id in seen:
+                    continue
+                seen.add(img_id)
                 doc = mongo_client[req.make.lower()][req.model].find_one({"_id": img_id})
                 if not doc or "data" not in doc:
                     continue
@@ -350,29 +311,34 @@ class RagPipeline:
     def _chain_config(self, prepared: PreparedChat, run_name: str) -> dict:
         return {
             "run_name": run_name,
-            "tags": ["fixmate", "phase1", "dense-only"],
+            "tags": ["fixmate", "phase2", "hybrid-rrf"],
             "metadata": {
                 "session_id": prepared.req.session_id,
                 "make": prepared.req.make,
                 "model": prepared.req.model,
                 "rewritten_query": prepared.rewritten_query,
+                "rrf_k": settings.rrf_k,
+                "dense_candidates": settings.dense_candidates,
+                "bm25_candidates": settings.bm25_candidates,
+                "context_top_k": settings.context_top_k,
             },
         }
 
-    def _metadata(self, match) -> dict:
-        if hasattr(match, "metadata"):
-            return match.metadata or {}
-        return match.get("metadata", {}) or {}
-
-    def _score(self, match) -> Optional[float]:
-        if hasattr(match, "score"):
-            return match.score
-        return match.get("score")
-
-    def _id(self, match) -> Optional[str]:
-        if hasattr(match, "id"):
-            return match.id
-        return match.get("id")
+    def _chain_config_for_req(self, req: ChatRequest, rewritten_query: str, run_name: str) -> dict:
+        return {
+            "run_name": run_name,
+            "tags": ["fixmate", "phase2", "hybrid-rrf"],
+            "metadata": {
+                "session_id": req.session_id,
+                "make": req.make,
+                "model": req.model,
+                "rewritten_query": rewritten_query,
+                "rrf_k": settings.rrf_k,
+                "dense_candidates": settings.dense_candidates,
+                "bm25_candidates": settings.bm25_candidates,
+                "context_top_k": settings.context_top_k,
+            },
+        }
 
 
 rag_pipeline = RagPipeline()

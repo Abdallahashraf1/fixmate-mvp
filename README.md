@@ -22,6 +22,13 @@ Optional backend variables:
 - `SHORT_TERM_TURNS`, defaults to `6`
 - `OPENAI_REWRITE_MODEL`, defaults to `gpt-4o-mini`
 - `OPENAI_ANSWER_MODEL`, defaults to `gpt-4o`
+- `RRF_K`, defaults to `60`
+- `DENSE_CANDIDATES`, defaults to `40`
+- `BM25_CANDIDATES`, defaults to `40`
+- `CONTEXT_TOP_K`, defaults to `10`
+- `RAG_CONTEXT_CHAR_LIMIT`, defaults to `6000`
+- `CHUNKS_DB`, defaults to `FixMate`
+- `CHUNKS_COLLECTION`, defaults to `manual_chunks`
 
 Required frontend variables:
 
@@ -41,6 +48,8 @@ uv run uvicorn app.main:app --reload
 ```
 
 The chat pipeline loads only the last configured `SHORT_TERM_TURNS` turns from MongoDB session history. This is short-term session memory only; the app does not use cross-session or vector long-term memory.
+
+Retrieval uses hybrid search: dense Pinecone results from the selected make/model namespace plus BM25 MongoDB text search from `FixMate.manual_chunks`. The two ranked lists are merged with Reciprocal Rank Fusion using `RRF_K`.
 
 If deployment still requires `requirements.txt`, generate it from `pyproject.toml` instead of editing it by hand:
 

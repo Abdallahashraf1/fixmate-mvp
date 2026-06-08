@@ -24,6 +24,13 @@ class Settings:
     short_term_turns: int
     rewrite_model: str
     answer_model: str
+    rrf_k: int
+    dense_candidates: int
+    bm25_candidates: int
+    context_top_k: int
+    rag_context_char_limit: int
+    chunks_db: str
+    chunks_collection: str
 
 
 settings = Settings(
@@ -33,4 +40,11 @@ settings = Settings(
     short_term_turns=int(os.getenv("SHORT_TERM_TURNS", "6")),
     rewrite_model=os.getenv("OPENAI_REWRITE_MODEL", "gpt-4o-mini"),
     answer_model=os.getenv("OPENAI_ANSWER_MODEL", "gpt-4o"),
+    rrf_k=int(os.getenv("RRF_K", "60")),
+    dense_candidates=int(os.getenv("DENSE_CANDIDATES", "40")),
+    bm25_candidates=int(os.getenv("BM25_CANDIDATES", "40")),
+    context_top_k=int(os.getenv("CONTEXT_TOP_K", "10")),
+    rag_context_char_limit=int(os.getenv("RAG_CONTEXT_CHAR_LIMIT", "6000")),
+    chunks_db=os.getenv("CHUNKS_DB", "FixMate"),
+    chunks_collection=os.getenv("CHUNKS_COLLECTION", "manual_chunks"),
 )
