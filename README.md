@@ -17,6 +17,12 @@ Required backend variables:
 - `PINECONE_API_KEY`
 - `MONGO_URI`
 
+Optional backend variables:
+
+- `SHORT_TERM_TURNS`, defaults to `6`
+- `OPENAI_REWRITE_MODEL`, defaults to `gpt-4o-mini`
+- `OPENAI_ANSWER_MODEL`, defaults to `gpt-4o`
+
 Required frontend variables:
 
 - `NEXT_PUBLIC_API_URL`
@@ -33,6 +39,8 @@ cd BACKEND
 uv sync
 uv run uvicorn app.main:app --reload
 ```
+
+The chat pipeline loads only the last configured `SHORT_TERM_TURNS` turns from MongoDB session history. This is short-term session memory only; the app does not use cross-session or vector long-term memory.
 
 If deployment still requires `requirements.txt`, generate it from `pyproject.toml` instead of editing it by hand:
 

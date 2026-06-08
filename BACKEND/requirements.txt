@@ -8,3 +8,8 @@ certifi
 Pillow
 langdetect
 sse-starlette
+langchain
+langchain-openai
+langchain-core
+langchain-community
+langsmith
