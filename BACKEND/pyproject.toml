@@ -1,0 +1,20 @@
+[project]
+name = "fixmate-backend"
+version = "0.1.0"
+description = "FixMate FastAPI backend"
+requires-python = ">=3.11"
+dependencies = [
+    "certifi",
+    "fastapi",
+    "langdetect",
+    "openai",
+    "Pillow",
+    "pinecone",
+    "pymongo[srv]==3.11",
+    "python-dotenv",
+    "sse-starlette",
+    "uvicorn[standard]",
+]
+
+[tool.uv]
+package = false
