@@ -64,6 +64,8 @@ def get_history(
             "content": d["content"],
             "is_ar": d.get("is_ar", False),
             "images": d.get("images", []),
+            "sources": d.get("sources", []),
+            "guardrails": d.get("guardrails", {}),
             "timestamp": d["timestamp"]
         })
     return history
