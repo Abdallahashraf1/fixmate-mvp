@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 64" role="img" aria-label="Toyota logo placeholder">
+  <rect width="160" height="64" rx="12" fill="#f9fafb"/>
+  <ellipse cx="42" cy="32" rx="28" ry="18" fill="none" stroke="#111827" stroke-width="5"/>
+  <ellipse cx="42" cy="32" rx="10" ry="23" fill="none" stroke="#111827" stroke-width="4"/>
+  <text x="82" y="39" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#111827">TOYOTA</text>
+</svg>

@@ -26,6 +26,7 @@ class PreparedChat:
     is_ar: bool
     rewritten_query: str
     messages: list[BaseMessage]
+    retrieval_candidates: list[RetrievalCandidate]
     source_chunks: list[SourceChunk]
     images: list[dict]
     guardrails: dict[str, GuardrailResult]
@@ -74,21 +75,35 @@ class RagPipeline:
         )
 
     def stream(self, req: ChatRequest) -> Generator[bytes, None, None]:
-        prepared = self.prepare(req)
+        prepared = self.prepare(req, include_images=False)
         if self._is_blocked(prepared):
             fallback = self._fallback_text(prepared.is_ar)
             yield fallback.encode("utf-8")
+            try:
+                self.persist_turn(prepared, fallback)
+            except Exception:
+                pass
             return
 
-        assistant_text = self.answer_chain.invoke(
+        chunks: list[str] = []
+        for chunk in self.answer_chain.stream(
             {"messages": prepared.messages},
             config=self._chain_config(prepared, "answer_stream"),
-        )
-        assistant_text = self._apply_output_guardrails(prepared, assistant_text)
-        self.persist_turn(prepared, assistant_text)
-        yield assistant_text.encode("utf-8")
+        ):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            yield chunk.encode("utf-8")
 
-    def prepare(self, req: ChatRequest) -> PreparedChat:
+        assistant_text = "".join(chunks)
+        assistant_text = self._apply_output_guardrails(prepared, assistant_text)
+        prepared.images = self._images_for_candidates(
+            prepared.req,
+            prepared.retrieval_candidates,
+        )
+        self.persist_turn(prepared, assistant_text)
+
+    def prepare(self, req: ChatRequest, *, include_images: bool = True) -> PreparedChat:
         is_ar = detect_language(req.query)
         input_guardrail = guardrails.check_input(req)
         guardrails_map = {"input": input_guardrail}
@@ -99,6 +114,7 @@ class RagPipeline:
                 is_ar=is_ar,
                 rewritten_query="",
                 messages=[],
+                retrieval_candidates=[],
                 source_chunks=[],
                 images=[],
                 guardrails=guardrails_map,
@@ -118,7 +134,7 @@ class RagPipeline:
         )
         context_full = hybrid_retriever.build_context(retrieval_candidates)
         source_chunks = hybrid_retriever.to_source_chunks(retrieval_candidates)
-        images = self._images_for_candidates(req, retrieval_candidates)
+        images = self._images_for_candidates(req, retrieval_candidates) if include_images else []
         messages = self._messages(req, is_ar, context_full)
 
         return PreparedChat(
@@ -127,6 +143,7 @@ class RagPipeline:
             is_ar=is_ar,
             rewritten_query=rewritten,
             messages=messages,
+            retrieval_candidates=retrieval_candidates,
             source_chunks=source_chunks,
             images=images,
             guardrails=guardrails_map,
@@ -293,19 +310,24 @@ Draft answer:
     def _images_for_candidates(self, req: ChatRequest, candidates: Iterable[RetrievalCandidate]) -> list[dict]:
         images_out = []
         seen = set()
-        for candidate in candidates:
+        for candidate in list(candidates)[: settings.image_candidate_top_k]:
             for img_id in candidate.image_ids:
+                if len(images_out) >= settings.max_retrieved_images:
+                    return images_out
                 if img_id in seen:
                     continue
                 seen.add(img_id)
                 doc = mongo_client[req.make.lower()][req.model].find_one({"_id": img_id})
                 if not doc or "data" not in doc:
                     continue
-                img = Image.open(io.BytesIO(doc["data"]))
-                if img.mode in ("1", "L", "P"):
-                    img = ImageOps.invert(img.convert("RGB"))
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
+                try:
+                    img = Image.open(io.BytesIO(doc["data"]))
+                    if img.mode in ("1", "L", "P"):
+                        img = ImageOps.invert(img.convert("RGB"))
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                except Exception:
+                    continue
                 images_out.append({
                     "id": img_id,
                     "page": doc.get("page", 0),
@@ -315,10 +337,12 @@ Draft answer:
         return images_out
 
     def _blocked_response(self, prepared: PreparedChat) -> ChatResponse:
+        fallback = self._fallback_text(prepared.is_ar)
+        self.persist_turn(prepared, fallback)
         return ChatResponse(
-            assistant_text=self._fallback_text(prepared.is_ar),
+            assistant_text=fallback,
             images=[],
-            session_id="",
+            session_id=prepared.req.session_id or "",
             sources=[],
             guardrails=prepared.guardrails,
         )

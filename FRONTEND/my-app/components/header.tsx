@@ -30,7 +30,7 @@ export const HeroHeader = () => {
             <div className="flex w-full items-center justify-between gap-12 lg:w-auto">
               <Link href="#hero" aria-label="FixMate home">
                 <Image
-                  src="/images/logo.png"
+                  src="/images/logo.svg"
                   alt="FixMate logo"
                   width={64}
                   height={64}

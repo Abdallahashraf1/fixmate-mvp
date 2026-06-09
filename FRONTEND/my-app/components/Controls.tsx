@@ -3,6 +3,11 @@
 import React, { useEffect, useState } from "react";
 import { useChat } from "../context/ChatContext";
 
+type ChatRole = "Car Owner" | "Car Specialist";
+
+const isChatRole = (value: string): value is ChatRole =>
+  value === "Car Owner" || value === "Car Specialist";
+
 export default function Controls() {
   const { role, make, model, setRole, setMake, setModel } = useChat();
   const [makes, setMakes] = useState<string[]>([]);
@@ -23,7 +28,14 @@ export default function Controls() {
 
   return (
     <div className="flex gap-4 p-4">
-      <select value={role} onChange={e => setRole(e.target.value as any)}>
+      <select
+        value={role}
+        onChange={(e) => {
+          if (isChatRole(e.target.value)) {
+            setRole(e.target.value);
+          }
+        }}
+      >
         <option>Car Specialist</option>
         <option>Car Owner</option>
       </select>

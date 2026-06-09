@@ -56,7 +56,7 @@ export default function HeroSection() {
               {/* Vertically-centered hero image */}
               <div className="relative mt-8 lg:mt-0 lg:w-1/2">
                 <Image
-                  src="/images/hero.jpg"
+                  src="/images/hero.svg"
                   alt="Engine diagram"
                   width={1200}
                   height={800}
