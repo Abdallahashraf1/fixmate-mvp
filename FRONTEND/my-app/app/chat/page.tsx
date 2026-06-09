@@ -4,7 +4,6 @@
 import Sidebar from "../../components/Sidebar";
 import ChatWindow from "../../components/ChatWindow";
 import { useChat } from "../../context/ChatContext";
-import styles from "../page.module.css";
 
 export default function ChatPage() {
   const { showSidebar } = useChat();

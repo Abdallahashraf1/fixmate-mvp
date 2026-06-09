@@ -36,7 +36,7 @@ export default function ChatWindow() {
             <AssistantMessage key={i} msg={m} />
           ) : (
             <div key={i} className="text-right my-2">
-              <div className="inline-block bg-[#DCF8C6] rounded-lg px-4 py-2">
+              <div className="inline-block rounded-lg bg-sky-100 px-4 py-2 text-sky-950">
                 {m.content}
               </div>
             </div>

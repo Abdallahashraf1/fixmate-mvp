@@ -1,24 +1,30 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
-import { Session, Message, ChatRequest } from "../lib/types";
+import React, { createContext, useContext, useEffect, useState } from "react";
+import { ChatRequest, Message, Session } from "../lib/types";
 import {
-  fetchSessions,
   createSession,
   fetchHistory,
+  fetchSessions,
   streamChat,
 } from "../lib/api";
+
+type ChatRole = "Car Owner" | "Car Specialist";
+
+const STREAM_REVEAL_INTERVAL_MS = 14;
+const STREAM_CHARS_PER_TICK = 4;
 
 interface ChatContextValue {
   sessions: Session[];
   current: Session | null;
   conversation: Message[];
-  role: "Car Owner" | "Car Specialist";
+  role: ChatRole;
   make: string;
   model: string;
+  freshSession: boolean;
   showSidebar: boolean;
-  setRole: (r: "Car Owner" | "Car Specialist") => void;
+  setRole: (r: ChatRole) => void;
   setMake: (m: string) => void;
   setModel: (m: string) => void;
   selectSession: (s: Session) => void;
@@ -40,25 +46,24 @@ export default function ChatProvider({
   const [sessions, setSessions] = useState<Session[]>([]);
   const [current, setCurrent] = useState<Session | null>(null);
   const [conversation, setConversation] = useState<Message[]>([]);
-  const [role, setRole] = useState<"Car Owner" | "Car Specialist">(
-    "Car Specialist"
-  );
+  const [role, setRole] = useState<ChatRole>("Car Specialist");
   const [make, setMake] = useState<string>("");
   const [model, setModel] = useState<string>("");
-
-  // NEW: sidebar visibility
+  const [freshSession, setFreshSession] = useState<boolean>(true);
   const [showSidebar, setShowSidebar] = useState<boolean>(true);
+
   const toggleSidebar = () => setShowSidebar((v) => !v);
 
-  // reload sessions list
   const loadSessions = () => {
     if (!user_id) return;
     fetchSessions(user_id).then(setSessions).catch(console.error);
   };
+
   useEffect(loadSessions, [user_id]);
 
   async function selectSession(sess: Session) {
     setCurrent(sess);
+    setFreshSession(false);
     try {
       const hist = await fetchHistory(sess.session_id, user_id);
       setConversation(hist);
@@ -74,6 +79,7 @@ export default function ChatProvider({
       const sess = await createSession(user_id);
       setCurrent(sess);
       setConversation([]);
+      setFreshSession(true);
       loadSessions();
     } catch (e) {
       console.error(e);
@@ -89,6 +95,7 @@ export default function ChatProvider({
         sess = await createSession(user_id);
         setCurrent(sess);
         setSessions((prev) => [sess!, ...prev]);
+        setFreshSession(true);
       } catch (e) {
         console.error(e);
         return;
@@ -98,12 +105,72 @@ export default function ChatProvider({
     setConversation((prev) => [
       ...prev,
       { role: "user", content: query },
-      { role: "assistant", content: "" },
+      { role: "assistant", content: "", isLoading: true },
     ]);
+    setFreshSession(false);
 
-    let buffer = "";
-    const fallback =
-      "I specialize in vehicle diagnostics 🚗. Please ask about components or repair steps.";
+    let incomingBuffer = "";
+    let displayedBuffer = "";
+    let streamFinished = false;
+    let finalHistory: Message[] | null = null;
+    let sessionsReloaded = false;
+    let revealTimer: ReturnType<typeof setInterval> | null = null;
+
+    const updateAssistant = (message: Partial<Message>) => {
+      setConversation((prev) => {
+        const c = [...prev];
+        const idx = c.length - 1;
+        if (idx >= 0 && c[idx].role === "assistant") {
+          c[idx] = { ...c[idx], ...message };
+        }
+        return c;
+      });
+    };
+
+    const finishDisplay = () => {
+      if (revealTimer) {
+        clearInterval(revealTimer);
+        revealTimer = null;
+      }
+      if (finalHistory?.length) {
+        setConversation(finalHistory);
+      } else {
+        updateAssistant({ isLoading: false });
+      }
+      if (!sessionsReloaded) {
+        sessionsReloaded = true;
+        loadSessions();
+      }
+    };
+
+    const maybeFinishDisplay = () => {
+      if (streamFinished && displayedBuffer.length >= incomingBuffer.length) {
+        finishDisplay();
+      }
+    };
+
+    const ensureRevealTimer = () => {
+      if (revealTimer) return;
+      revealTimer = setInterval(() => {
+        if (displayedBuffer.length < incomingBuffer.length) {
+          const nextLength = Math.min(
+            incomingBuffer.length,
+            displayedBuffer.length + STREAM_CHARS_PER_TICK
+          );
+          displayedBuffer = incomingBuffer.slice(0, nextLength);
+          updateAssistant({
+            content: displayedBuffer,
+            isLoading: displayedBuffer.length === 0,
+          });
+          maybeFinishDisplay();
+          return;
+        }
+
+        if (streamFinished) {
+          finishDisplay();
+        }
+      }, STREAM_REVEAL_INTERVAL_MS);
+    };
 
     streamChat(
       {
@@ -115,26 +182,30 @@ export default function ChatProvider({
         query,
       } as ChatRequest,
       (delta) => {
-        buffer += delta;
-        setConversation((prev) => {
-          const c = [...prev];
-          c[c.length - 1] = { role: "assistant", content: buffer };
-          return c;
-        });
+        incomingBuffer += delta;
+        ensureRevealTimer();
       },
       async () => {
-        if (buffer.trim() === fallback) {
-          return;
-        }
+        streamFinished = true;
         try {
           const full = await fetchHistory(sess!.session_id, user_id);
-          setConversation(full);
+          if (full.length > 0) {
+            finalHistory = full;
+          }
         } catch (e) {
           console.error(e);
         }
-        loadSessions();
+        if (!incomingBuffer) {
+          updateAssistant({ isLoading: false });
+        }
+        maybeFinishDisplay();
       },
       (err) => {
+        streamFinished = true;
+        if (!incomingBuffer) {
+          updateAssistant({ isLoading: false });
+        }
+        maybeFinishDisplay();
         console.error("Stream error:", err);
       }
     );
@@ -150,6 +221,7 @@ export default function ChatProvider({
         make,
         model,
         showSidebar,
+        freshSession,
         setRole,
         setMake,
         setModel,

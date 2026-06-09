@@ -17,7 +17,7 @@ export default function FooterSection() {
         {/* Larger logo */}
         <Link href="/" aria-label="FixMate home" className="inline-block mb-8">
           <Image
-            src="/images/logo.png"
+            src="/images/logo.svg"
             alt="FixMate logo"
             width={64}
             height={64}

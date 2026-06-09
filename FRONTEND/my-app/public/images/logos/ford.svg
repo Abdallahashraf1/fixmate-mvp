@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 64" role="img" aria-label="Ford logo placeholder">
+  <rect width="160" height="64" rx="12" fill="#f9fafb"/>
+  <ellipse cx="80" cy="32" rx="62" ry="22" fill="#1d4ed8"/>
+  <text x="50" y="40" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#ffffff">Ford</text>
+</svg>

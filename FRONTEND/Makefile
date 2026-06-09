@@ -10,7 +10,7 @@ all: setup install-deps
 
 # Target to set up a new Next.js app using pnpm
 setup:
-	@npx create-next-app@15.2.3 $(APP_NAME) --typescript --package-manager pnpm
+	@npx create-next-app@15.5.19 $(APP_NAME) --typescript --package-manager pnpm
 	@cd $(APP_NAME) && pnpm dlx shadcn@latest init
 
 # Target to install all dependencies using pnpm

@@ -1,5 +1,6 @@
 BACKEND/.env
 FRONTEND/.env.local
+FRONTEND/my-app/.env.local
 docs/
 
 # Python

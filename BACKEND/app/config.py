@@ -31,8 +31,11 @@ class Settings:
     bm25_candidates: int
     context_top_k: int
     rag_context_char_limit: int
+    image_candidate_top_k: int
+    max_retrieved_images: int
     chunks_db: str
     chunks_collection: str
+    frontend_origins: list[str]
 
 
 settings = Settings(
@@ -45,10 +48,22 @@ settings = Settings(
     guardrail_model=os.getenv("OPENAI_GUARDRAIL_MODEL", "gpt-4o-mini"),
     revise_ungrounded_output=os.getenv("REVISE_UNGROUNDED_OUTPUT", "true").lower() == "true",
     rrf_k=int(os.getenv("RRF_K", "60")),
-    dense_candidates=int(os.getenv("DENSE_CANDIDATES", "40")),
-    bm25_candidates=int(os.getenv("BM25_CANDIDATES", "40")),
-    context_top_k=int(os.getenv("CONTEXT_TOP_K", "10")),
-    rag_context_char_limit=int(os.getenv("RAG_CONTEXT_CHAR_LIMIT", "6000")),
+    dense_candidates=int(os.getenv("DENSE_CANDIDATES", "25")),
+    bm25_candidates=int(os.getenv("BM25_CANDIDATES", "25")),
+    context_top_k=int(os.getenv("CONTEXT_TOP_K", "1")),
+    rag_context_char_limit=int(os.getenv("RAG_CONTEXT_CHAR_LIMIT", "1200")),
+    image_candidate_top_k=int(os.getenv("IMAGE_CANDIDATE_TOP_K", "2")),
+    max_retrieved_images=int(os.getenv("MAX_RETRIEVED_IMAGES", "4")),
     chunks_db=os.getenv("CHUNKS_DB", "FixMate"),
     chunks_collection=os.getenv("CHUNKS_COLLECTION", "manual_chunks"),
+    frontend_origins=[
+        origin.strip()
+        for origin in os.getenv(
+            "FRONTEND_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000,"
+            "http://localhost:3001,http://127.0.0.1:3001,"
+            "http://localhost:3002,http://127.0.0.1:3002",
+        ).split(",")
+        if origin.strip()
+    ],
 )

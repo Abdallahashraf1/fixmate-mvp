@@ -42,15 +42,33 @@ export default function HeaderBar() {
 
   useEffect(() => {
     fetch(`${process.env.NEXT_PUBLIC_API_URL}/meta/makes`)
-      .then((r) => r.json())
-      .then(setMakes);
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`Failed to load makes (${r.status})`);
+        }
+        return r.json();
+      })
+      .then(setMakes)
+      .catch((error) => {
+        console.error(error);
+        setMakes([]);
+      });
   }, []);
 
   useEffect(() => {
     if (!make) return setModels([]);
     fetch(`${process.env.NEXT_PUBLIC_API_URL}/meta/models?make=${make}`)
-      .then((r) => r.json())
-      .then(setModels);
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error(`Failed to load models (${r.status})`);
+        }
+        return r.json();
+      })
+      .then(setModels)
+      .catch((error) => {
+        console.error(error);
+        setModels([]);
+      });
   }, [make]);
 
   return (
