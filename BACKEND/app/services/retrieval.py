@@ -7,6 +7,7 @@ from pymongo.errors import PyMongoError
 from app.config import settings
 from app.db import mongo_client, pinecone_client
 from app.models import ChatRequest, SourceChunk
+from app.services.tracing import retrieval_trace_inputs, retrieval_trace_outputs, traceable
 
 
 @dataclass
@@ -40,6 +41,12 @@ class HybridRetriever:
         bm25 = self.bm25_search(req=req, rewritten_query=rewritten_query, top_k=settings.bm25_candidates)
         return self.rrf_fuse(dense=dense, bm25=bm25, top_k=settings.context_top_k)
 
+    @traceable(
+        name="dense_retrieval",
+        run_type="retriever",
+        process_inputs=retrieval_trace_inputs,
+        process_outputs=retrieval_trace_outputs,
+    )
     def dense_search(
         self,
         *,
@@ -75,6 +82,12 @@ class HybridRetriever:
             ))
         return candidates
 
+    @traceable(
+        name="bm25_retrieval",
+        run_type="retriever",
+        process_inputs=retrieval_trace_inputs,
+        process_outputs=retrieval_trace_outputs,
+    )
     def bm25_search(
         self,
         *,
@@ -134,6 +147,12 @@ class HybridRetriever:
             ))
         return candidates
 
+    @traceable(
+        name="rrf_fusion",
+        run_type="chain",
+        process_inputs=retrieval_trace_inputs,
+        process_outputs=retrieval_trace_outputs,
+    )
     def rrf_fuse(
         self,
         *,

@@ -66,6 +66,7 @@ def get_history(
             "images": d.get("images", []),
             "sources": d.get("sources", []),
             "guardrails": d.get("guardrails", {}),
+            "trace_id": d.get("trace_id"),
             "timestamp": d["timestamp"]
         })
     return history

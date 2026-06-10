@@ -16,6 +16,24 @@ from app.db import mongo_client, sessions_col, history_col
 from app.models import ChatRequest, ChatResponse, GuardrailResult, SourceChunk
 from app.services.guardrails import guardrails
 from app.services.retrieval import RetrievalCandidate, hybrid_retriever
+from app.services.tracing import (
+    add_current_metadata,
+    add_current_tags,
+    chain_config_metadata,
+    chain_config_tags,
+    chat_request_trace_inputs,
+    chat_response_trace_outputs,
+    current_trace_id,
+    messages_for_trace,
+    persistence_trace_inputs,
+    prompt_trace_inputs,
+    prompt_trace_outputs,
+    query_type_from_guardrails,
+    request_trace_context,
+    source_chunks_for_trace,
+    stream_trace_reduce,
+    traceable,
+)
 from app.utils import build_system_prompt, detect_language, new_session
 
 
@@ -30,6 +48,7 @@ class PreparedChat:
     source_chunks: list[SourceChunk]
     images: list[dict]
     guardrails: dict[str, GuardrailResult]
+    trace_id: Optional[str] = None
 
 
 class RagPipeline:
@@ -56,6 +75,16 @@ class RagPipeline:
         )
 
     def run(self, req: ChatRequest) -> ChatResponse:
+        with request_trace_context(req, "chat"):
+            return self._run_traced(req)
+
+    @traceable(
+        name="fixmate_chat",
+        run_type="chain",
+        process_inputs=chat_request_trace_inputs,
+        process_outputs=chat_response_trace_outputs,
+    )
+    def _run_traced(self, req: ChatRequest) -> ChatResponse:
         prepared = self.prepare(req)
         if self._is_blocked(prepared):
             return self._blocked_response(prepared)
@@ -65,6 +94,15 @@ class RagPipeline:
             config=self._chain_config(prepared, "answer"),
         )
         assistant_text = self._apply_output_guardrails(prepared, assistant_text)
+        prepared.trace_id = prepared.trace_id or current_trace_id()
+        add_current_metadata(
+            final_response=assistant_text,
+            final_response_chars=len(assistant_text),
+            images_count=len(prepared.images),
+            output_guardrail=prepared.guardrails.get("output").model_dump()
+            if prepared.guardrails.get("output")
+            else None,
+        )
         self.persist_turn(prepared, assistant_text)
         return ChatResponse(
             assistant_text=assistant_text,
@@ -72,14 +110,26 @@ class RagPipeline:
             session_id=prepared.req.session_id or "",
             sources=prepared.source_chunks,
             guardrails=prepared.guardrails,
+            trace_id=prepared.trace_id,
         )
 
     def stream(self, req: ChatRequest) -> Generator[bytes, None, None]:
+        with request_trace_context(req, "chat_stream"):
+            yield from self._stream_traced(req)
+
+    @traceable(
+        name="fixmate_chat_stream",
+        run_type="chain",
+        process_inputs=chat_request_trace_inputs,
+        reduce_fn=stream_trace_reduce,
+    )
+    def _stream_traced(self, req: ChatRequest) -> Generator[bytes, None, None]:
         prepared = self.prepare(req, include_images=False)
         if self._is_blocked(prepared):
             fallback = self._fallback_text(prepared.is_ar)
             yield fallback.encode("utf-8")
             try:
+                prepared.trace_id = prepared.trace_id or current_trace_id()
                 self.persist_turn(prepared, fallback)
             except Exception:
                 pass
@@ -101,12 +151,31 @@ class RagPipeline:
             prepared.req,
             prepared.retrieval_candidates,
         )
+        prepared.trace_id = prepared.trace_id or current_trace_id()
+        add_current_metadata(
+            final_response=assistant_text,
+            final_response_chars=len(assistant_text),
+            images_count=len(prepared.images),
+            output_guardrail=prepared.guardrails.get("output").model_dump()
+            if prepared.guardrails.get("output")
+            else None,
+        )
         self.persist_turn(prepared, assistant_text)
 
     def prepare(self, req: ChatRequest, *, include_images: bool = True) -> PreparedChat:
         is_ar = detect_language(req.query)
-        input_guardrail = guardrails.check_input(req)
+        input_guardrail = guardrails.check_input(
+            req,
+            config=self._chain_config_for_req(req, "", "input_guardrails"),
+        )
         guardrails_map = {"input": input_guardrail}
+        query_type = query_type_from_guardrails(guardrails_map)
+        add_current_tags([f"query_type:{query_type}"])
+        add_current_metadata(
+            query_type=query_type,
+            input_guardrail=input_guardrail.model_dump(),
+            language="ar" if is_ar else "en",
+        )
         if not input_guardrail.allowed:
             return PreparedChat(
                 req=req,
@@ -118,9 +187,15 @@ class RagPipeline:
                 source_chunks=[],
                 images=[],
                 guardrails=guardrails_map,
+                trace_id=current_trace_id(),
             )
 
-        rewritten = self._rewrite_query(req.query, is_ar)
+        rewritten = self._rewrite_query(
+            req.query,
+            is_ar,
+            config=self._chain_config_for_req(req, "", "query_rewrite", query_type=query_type),
+        )
+        add_current_metadata(rewritten_query=rewritten)
         query_embedding = self.embeddings.embed_query(rewritten)
 
         session = self._ensure_session(req)
@@ -130,12 +205,22 @@ class RagPipeline:
                 "rewritten_query": rewritten,
                 "query_embedding": query_embedding,
             },
-            config=self._chain_config_for_req(req, rewritten, "hybrid_retrieval"),
+            config=self._chain_config_for_req(
+                req,
+                rewritten,
+                "hybrid_retrieval",
+                query_type=query_type,
+            ),
         )
         context_full = hybrid_retriever.build_context(retrieval_candidates)
         source_chunks = hybrid_retriever.to_source_chunks(retrieval_candidates)
         images = self._images_for_candidates(req, retrieval_candidates) if include_images else []
         messages = self._messages(req, is_ar, context_full)
+        add_current_metadata(
+            retrieved_chunks=source_chunks_for_trace(source_chunks),
+            retrieved_chunk_count=len(source_chunks),
+            final_prompt_messages=messages_for_trace(messages) if settings.langsmith_capture_prompts else None,
+        )
 
         return PreparedChat(
             req=req,
@@ -147,8 +232,15 @@ class RagPipeline:
             source_chunks=source_chunks,
             images=images,
             guardrails=guardrails_map,
+            trace_id=current_trace_id(),
         )
 
+    @traceable(
+        name="history_persistence",
+        run_type="tool",
+        process_inputs=persistence_trace_inputs,
+        process_outputs=lambda _: {"persisted": True},
+    )
     def persist_turn(self, prepared: PreparedChat, assistant_text: str) -> None:
         now = datetime.now(timezone.utc)
         req = prepared.req
@@ -162,6 +254,7 @@ class RagPipeline:
             "images": [],
             "sources": [],
             "guardrails": {},
+            "trace_id": prepared.trace_id,
             "timestamp": now,
         })
 
@@ -188,10 +281,11 @@ class RagPipeline:
             "images": prepared.images,
             "sources": [s.model_dump() for s in prepared.source_chunks],
             "guardrails": {k: v.model_dump() for k, v in prepared.guardrails.items()},
+            "trace_id": prepared.trace_id,
             "timestamp": now,
         })
 
-    def _rewrite_query(self, query: str, is_ar: bool) -> str:
+    def _rewrite_query(self, query: str, is_ar: bool, config: dict | None = None) -> str:
         rewrite_prompt = (
             (
                 "أعد صياغة سؤال المستخدم ليصبح مستقلا وواضحا.\n\n"
@@ -205,13 +299,15 @@ class RagPipeline:
                 "Standalone question:"
             )
         )
-        return self.rewrite_chain.invoke({"prompt": rewrite_prompt}).strip()
+        return self.rewrite_chain.invoke({"prompt": rewrite_prompt}, config=config).strip()
 
+    @traceable(name="output_guardrail_application", run_type="chain")
     def _apply_output_guardrails(self, prepared: PreparedChat, assistant_text: str) -> str:
         first = guardrails.check_output(
             question=prepared.req.query,
             answer=assistant_text,
             sources=prepared.source_chunks,
+            config=self._chain_config(prepared, "output_guardrails"),
         )
         if first.should_revise and settings.revise_ungrounded_output:
             revised_text = self.revision_chain.invoke(
@@ -228,6 +324,7 @@ class RagPipeline:
                 question=prepared.req.query,
                 answer=revised_text,
                 sources=prepared.source_chunks,
+                config=self._chain_config(prepared, "output_guardrails_after_revision"),
             )
             second.result.flags = list(dict.fromkeys(["revised_for_grounding", *second.result.flags]))
             second.result.details["initial_output_guardrail"] = first.result.model_dump()
@@ -282,6 +379,12 @@ Draft answer:
         })
         return {"session_id": ns["session_id"], "summary": ""}
 
+    @traceable(
+        name="prompt_build",
+        run_type="prompt",
+        process_inputs=prompt_trace_inputs,
+        process_outputs=prompt_trace_outputs,
+    )
     def _messages(self, req: ChatRequest, is_ar: bool, context: str) -> list[BaseMessage]:
         system_msg = build_system_prompt(req.role, is_ar, req.make, req.model, context)
         messages: list[BaseMessage] = [SystemMessage(content=system_msg)]
@@ -338,6 +441,15 @@ Draft answer:
 
     def _blocked_response(self, prepared: PreparedChat) -> ChatResponse:
         fallback = self._fallback_text(prepared.is_ar)
+        prepared.trace_id = prepared.trace_id or current_trace_id()
+        add_current_metadata(
+            blocked=True,
+            final_response=fallback,
+            final_response_chars=len(fallback),
+            input_guardrail=prepared.guardrails.get("input").model_dump()
+            if prepared.guardrails.get("input")
+            else None,
+        )
         self.persist_turn(prepared, fallback)
         return ChatResponse(
             assistant_text=fallback,
@@ -345,6 +457,7 @@ Draft answer:
             session_id=prepared.req.session_id or "",
             sources=[],
             guardrails=prepared.guardrails,
+            trace_id=prepared.trace_id,
         )
 
     def _fallback_text(self, is_ar: bool) -> str:
@@ -360,35 +473,38 @@ Draft answer:
         return bool(input_guardrail and not input_guardrail.allowed)
 
     def _chain_config(self, prepared: PreparedChat, run_name: str) -> dict:
+        query_type = query_type_from_guardrails(prepared.guardrails)
+        sources = prepared.source_chunks if run_name.startswith("answer") else None
+        messages = prepared.messages if run_name.startswith("answer") else None
         return {
             "run_name": run_name,
-            "tags": ["fixmate", "phase3", "hybrid-rrf", "guardrails"],
-            "metadata": {
-                "session_id": prepared.req.session_id,
-                "make": prepared.req.make,
-                "model": prepared.req.model,
-                "rewritten_query": prepared.rewritten_query,
-                "rrf_k": settings.rrf_k,
-                "dense_candidates": settings.dense_candidates,
-                "bm25_candidates": settings.bm25_candidates,
-                "context_top_k": settings.context_top_k,
-            },
+            "tags": chain_config_tags(prepared.req, run_name, query_type),
+            "metadata": chain_config_metadata(
+                req=prepared.req,
+                run_name=run_name,
+                rewritten_query=prepared.rewritten_query,
+                query_type=query_type,
+                sources=sources,
+                messages=messages,
+            ),
         }
 
-    def _chain_config_for_req(self, req: ChatRequest, rewritten_query: str, run_name: str) -> dict:
+    def _chain_config_for_req(
+        self,
+        req: ChatRequest,
+        rewritten_query: str,
+        run_name: str,
+        query_type: str = "unknown",
+    ) -> dict:
         return {
             "run_name": run_name,
-            "tags": ["fixmate", "phase3", "hybrid-rrf", "guardrails"],
-            "metadata": {
-                "session_id": req.session_id,
-                "make": req.make,
-                "model": req.model,
-                "rewritten_query": rewritten_query,
-                "rrf_k": settings.rrf_k,
-                "dense_candidates": settings.dense_candidates,
-                "bm25_candidates": settings.bm25_candidates,
-                "context_top_k": settings.context_top_k,
-            },
+            "tags": chain_config_tags(req, run_name, query_type),
+            "metadata": chain_config_metadata(
+                req=req,
+                run_name=run_name,
+                rewritten_query=rewritten_query,
+                query_type=query_type,
+            ),
         }
 
 

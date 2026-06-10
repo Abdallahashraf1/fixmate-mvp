@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.models import ChatRequest, GuardrailResult, SourceChunk
+from app.services.tracing import guardrail_trace_inputs, guardrail_trace_outputs, traceable
 
 
 @dataclass
@@ -28,7 +29,13 @@ class Guardrails:
         )
         self.classifier_chain = prompt | llm | StrOutputParser()
 
-    def check_input(self, req: ChatRequest) -> GuardrailResult:
+    @traceable(
+        name="input_guardrails",
+        run_type="chain",
+        process_inputs=guardrail_trace_inputs,
+        process_outputs=guardrail_trace_outputs,
+    )
+    def check_input(self, req: ChatRequest, config: dict | None = None) -> GuardrailResult:
         injection = self._detect_prompt_injection(req.query)
         if injection:
             return GuardrailResult(
@@ -65,7 +72,7 @@ Query:
 {req.query}
 """.strip()
         try:
-            data = self._load_json(self.classifier_chain.invoke({"prompt": prompt}))
+            data = self._load_json(self._invoke_classifier({"prompt": prompt}, config=config))
         except Exception:
             return GuardrailResult(
                 allowed=True,
@@ -84,15 +91,27 @@ Query:
             details={"query_type": query_type},
         )
 
+    @traceable(
+        name="output_guardrails",
+        run_type="chain",
+        process_inputs=guardrail_trace_inputs,
+        process_outputs=guardrail_trace_outputs,
+    )
     def check_output(
         self,
         *,
         question: str,
         answer: str,
         sources: list[SourceChunk],
+        config: dict | None = None,
     ) -> OutputGuardrailDecision:
         pii_text, pii_flags, pii_details = self._redact_pii(answer)
-        grounding = self._check_grounding(question=question, answer=pii_text, sources=sources)
+        grounding = self._check_grounding(
+            question=question,
+            answer=pii_text,
+            sources=sources,
+            config=config,
+        )
 
         flags = []
         if pii_flags:
@@ -127,6 +146,7 @@ Query:
         question: str,
         answer: str,
         sources: list[SourceChunk],
+        config: dict | None = None,
     ) -> GuardrailResult:
         if not answer.strip():
             return GuardrailResult(allowed=True, reason="Empty answer.", details={"grounded": True})
@@ -179,7 +199,7 @@ Answer:
 {answer}
 """.strip()
         try:
-            data = self._load_json(self.classifier_chain.invoke({"prompt": prompt}))
+            data = self._load_json(self._invoke_classifier({"prompt": prompt}, config=config))
         except Exception:
             return GuardrailResult(
                 allowed=True,
@@ -259,6 +279,14 @@ Answer:
         if match:
             cleaned = match.group(0)
         return json.loads(cleaned)
+
+    def _invoke_classifier(self, payload: dict[str, str], config: dict | None = None) -> str:
+        if config is None:
+            return self.classifier_chain.invoke(payload)
+        try:
+            return self.classifier_chain.invoke(payload, config=config)
+        except TypeError:
+            return self.classifier_chain.invoke(payload)
 
 
 guardrails = Guardrails()

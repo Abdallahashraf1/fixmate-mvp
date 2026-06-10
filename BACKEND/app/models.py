@@ -36,6 +36,7 @@ class Message(BaseModel):
     is_ar: Optional[bool] = False
     sources: List[SourceChunk] = Field(default_factory=list)
     guardrails: dict[str, GuardrailResult] = Field(default_factory=dict)
+    trace_id: Optional[str] = None
 
 class HistoryMessage(Message):
     timestamp: datetime
@@ -55,6 +56,7 @@ class ChatResponse(BaseModel):
     session_id: str
     sources: List[SourceChunk] = Field(default_factory=list)
     guardrails: dict[str, GuardrailResult] = Field(default_factory=dict)
+    trace_id: Optional[str] = None
 
 class ImageRequest(BaseModel):
     make: str
