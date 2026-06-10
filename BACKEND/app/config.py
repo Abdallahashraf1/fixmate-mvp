@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -36,6 +40,11 @@ class Settings:
     chunks_db: str
     chunks_collection: str
     frontend_origins: list[str]
+    langsmith_tracing: bool
+    langsmith_api_key: str | None
+    langsmith_project: str
+    langsmith_endpoint: str
+    langsmith_capture_prompts: bool
 
 
 settings = Settings(
@@ -56,6 +65,11 @@ settings = Settings(
     max_retrieved_images=int(os.getenv("MAX_RETRIEVED_IMAGES", "4")),
     chunks_db=os.getenv("CHUNKS_DB", "FixMate"),
     chunks_collection=os.getenv("CHUNKS_COLLECTION", "manual_chunks"),
+    langsmith_tracing=_env_bool("LANGSMITH_TRACING", "false"),
+    langsmith_api_key=os.getenv("LANGSMITH_API_KEY") or None,
+    langsmith_project=os.getenv("LANGSMITH_PROJECT", "fixmate-rag"),
+    langsmith_endpoint=os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+    langsmith_capture_prompts=_env_bool("LANGSMITH_CAPTURE_PROMPTS", "true"),
     frontend_origins=[
         origin.strip()
         for origin in os.getenv(
@@ -67,3 +81,15 @@ settings = Settings(
         if origin.strip()
     ],
 )
+
+if settings.langsmith_tracing and settings.langsmith_api_key:
+    os.environ.setdefault("LANGSMITH_API_KEY", settings.langsmith_api_key or "")
+    os.environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
+    os.environ.setdefault("LANGSMITH_ENDPOINT", settings.langsmith_endpoint)
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+    os.environ.setdefault("LANGSMITH_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+elif settings.langsmith_tracing:
+    os.environ["LANGSMITH_TRACING"] = "false"
+    os.environ["LANGSMITH_TRACING_V2"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
